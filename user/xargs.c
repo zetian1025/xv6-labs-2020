@@ -7,7 +7,7 @@
 
 #define ARGSIZE (16)
 
-char *my_gets(char *buf, int max)
+int my_gets(char *buf, int max)
 {
     int i, cc;
     char c;
@@ -24,7 +24,8 @@ char *my_gets(char *buf, int max)
         buf[i++] = c;
     }
     buf[i] = '\0';
-    return buf;
+
+    return strlen(buf);
 }
 
 int main(int argc, char *argv[])
@@ -32,6 +33,12 @@ int main(int argc, char *argv[])
     char buf[ARGSIZE];
     char *new_argv[MAXARG];
     int curr = argc - 1;
+
+    if (argc >= MAXARG)
+    {
+        printf("too much args.\n");
+        exit(0);
+    }
 
     for (int i = 0; i < argc - 1; i++)
     {
@@ -41,18 +48,9 @@ int main(int argc, char *argv[])
 
     while (my_gets(buf, sizeof(buf)))
     {
-        if (buf[0] == '\0')
-        {
-            break;
-        }
         new_argv[curr] = (char *)malloc(ARGSIZE);
         memmove(new_argv[curr], buf, strlen(buf));
         new_argv[++curr] = NULL;
-        if (curr == MAXARG + 1)
-        {
-            printf("max args.\n");
-            break;
-        }
     }
 
     int ret = fork();
@@ -66,7 +64,7 @@ int main(int argc, char *argv[])
         wait(NULL);
     }
 
-    for (int i = 0; i < curr - 1; i++)
+    for (int i = 0; i < curr; i++)
     {
         free(new_argv[i]);
     }
