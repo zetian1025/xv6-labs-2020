@@ -102,10 +102,8 @@ bget(uint dev, uint blockno)
 
   // Not cached. Steal from other buf list.
   // Recycle the least recently used (LRU) unused buffer.
-  for (int cnt = 0; cnt < NBUCKETS; cnt++)
+  for (int cnt=(idx+1)%NBUCKETS; cnt!=idx; cnt=(cnt+1)%NBUCKETS)
   {
-    if (cnt == idx)
-      continue;
     acquire(&bcache.lock[cnt]);
     for (b = bcache.hashbucket[cnt].prev; b != &bcache.hashbucket[cnt]; b = b->prev)
     {
@@ -119,20 +117,20 @@ bget(uint dev, uint blockno)
         b->prev->next = b->next;
         b->next->prev = b->prev;
 
-        release(&bcache.lock[cnt]);
-
         b->next = bcache.hashbucket[idx].next;
         b->prev = &bcache.hashbucket[idx];
         bcache.hashbucket[idx].next->prev = b;
         bcache.hashbucket[idx].next = b;
 
         release(&bcache.lock[idx]);
+        release(&bcache.lock[cnt]);
 
         acquiresleep(&b->lock);
         return b;
       }
     }
     release(&bcache.lock[cnt]);
+    // cnt = hash(cnt);
   }
   panic("bget: no buffers");
 }

@@ -100,7 +100,6 @@ kalloc(void)
   int cpu_id = cpuid();
   pop_off();
 
-  // acquire(&kmems[cpu_id].lock);
   r = kmems[cpu_id].freelist;
 
   if (r)
@@ -122,7 +121,6 @@ kalloc(void)
       release(&kmems[i].lock);
     }
   }
-  // release(&kmems[cpu_id].lock);
 
   if (r)
     memset((char *)r, 5, PGSIZE); // fill with junk
