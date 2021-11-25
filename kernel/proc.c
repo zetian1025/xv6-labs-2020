@@ -19,6 +19,8 @@ extern void forkret(void);
 static void wakeup1(struct proc *chan);
 static void freeproc(struct proc *p);
 
+extern char etext[];  // kernel.ld sets this to end of kernel code.
+
 extern char trampoline[]; // trampoline.S
 
 // initialize the proc table at boot time.
@@ -40,6 +42,7 @@ procinit(void)
       uint64 va = KSTACK((int) (p - proc));
       kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
       p->kstack = va;
+      p->kstack_pa = (uint64)pa;
   }
   kvminithart();
 }
@@ -113,6 +116,11 @@ found:
     return 0;
   }
 
+  // An empty kernel page table with kernel stack.
+  pagetable_t k_pagetable = indiv_kvminit();
+  p->k_pagetable = k_pagetable;
+  indiv_kvmmap(k_pagetable, p->kstack, p->kstack_pa, PGSIZE, PTE_R | PTE_W);
+
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
   if(p->pagetable == 0){
@@ -139,9 +147,12 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+  if(p->k_pagetable)
+    proc_freekpagetable(p->k_pagetable, p->sz);
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
+  p->k_pagetable = 0;
   p->sz = 0;
   p->pid = 0;
   p->parent = 0;
@@ -193,6 +204,18 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
   uvmfree(pagetable, sz);
+}
+
+void
+proc_freekpagetable(pagetable_t pagetable, uint64 sz)
+{
+  indiv_kvmunmap(pagetable, UART0, 1);
+  indiv_kvmunmap(pagetable, VIRTIO0, 1);
+  indiv_kvmunmap(pagetable, PLIC, 0x400000 / PGSIZE);
+  indiv_kvmunmap(pagetable, KERNBASE, ((uint64)etext-KERNBASE)/PGSIZE);
+  indiv_kvmunmap(pagetable, (uint64)etext, (PHYSTOP-(uint64)etext)/PGSIZE);
+  indiv_kvmunmap(pagetable, TRAMPOLINE, 1);
+  indiv_kvmfree(pagetable);
 }
 
 // a user program that calls exec("/init")
@@ -473,7 +496,10 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+
+        indiv_kvminithart(p->k_pagetable);
         swtch(&c->context, &p->context);
+        kvminithart();
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
