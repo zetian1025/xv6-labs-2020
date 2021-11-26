@@ -384,23 +384,7 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
-  uint64 n, va0, pa0;
-
-  while(len > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > len)
-      n = len;
-    memmove(dst, (void *)(pa0 + (srcva - va0)), n);
-
-    len -= n;
-    dst += n;
-    srcva = va0 + PGSIZE;
-  }
-  return 0;
+  return copyin_new(pagetable, dst, srcva, len);
 }
 
 // Copy a null-terminated string from user to kernel.
@@ -410,40 +394,7 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
-  uint64 n, va0, pa0;
-  int got_null = 0;
-
-  while(got_null == 0 && max > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > max)
-      n = max;
-
-    char *p = (char *) (pa0 + (srcva - va0));
-    while(n > 0){
-      if(*p == '\0'){
-        *dst = '\0';
-        got_null = 1;
-        break;
-      } else {
-        *dst = *p;
-      }
-      --n;
-      --max;
-      p++;
-      dst++;
-    }
-
-    srcva = va0 + PGSIZE;
-  }
-  if(got_null){
-    return 0;
-  } else {
-    return -1;
-  }
+  return copyinstr_new(pagetable, dst, srcva, max);
 }
 
 // check if use global kpgtbl or not 
@@ -488,6 +439,38 @@ vmprint(pagetable_t pagetable)
   vmprint_lv(pagetable, 0);
 }
 
+void vmprint_u2k_lv(pagetable_t pagetable, int lv){
+  if (lv > 2) return;
+  char prefix[] = "||";
+  char suffix[] = " ||";
+  for (int i=0; i<lv; i++) {
+    strncat(prefix, suffix);
+  }
+
+  int max;
+  if (lv == 2){
+    max = 128;
+  }
+  else {
+    max = 1;
+  }
+  for (int i=0; i<max; i++){
+    pte_t pte = pagetable[i];
+    if (pte & PTE_V) {
+      printf("%s%d: pte %p pa %p\n", prefix, i, pte, PTE2PA(pte));
+      uint64 child = PTE2PA(pte);
+      vmprint_u2k_lv((pagetable_t)child, lv+1);
+    }
+  }
+}
+
+void
+vmprint_u2k(pagetable_t pagetable)
+{
+  printf("page table %p\n", pagetable);
+  vmprint_u2k_lv(pagetable, 0);
+}
+
 /**
  * create individual page table for the kernel
  */
@@ -518,12 +501,6 @@ pagetable_t indiv_kvminit()
   return k_pagetable;
 }
 
-/**
- * add a mapping to the kernel page table.
- * only used when booting.
- * dose not flush TLB or enable paging.
- * @version Individual page table
- */
 void indiv_kvmmap(pagetable_t k_pagetable, uint64 va, uint64 pa, uint64 sz, int perm) {
   if (mappages(k_pagetable, va, sz, pa, perm) != 0)
     panic("indiv_kvmmap");
@@ -553,7 +530,7 @@ indiv_freewalk(pagetable_t pagetable, int level)
       indiv_freewalk((pagetable_t)child, level+1);
       pagetable[i] = 0;  
     } else if(pte & PTE_V){
-      panic("freewalk: leaf");
+      panic("indiv_freewalk: leaf");
     }
   }
   kfree((void*)pagetable);
@@ -585,4 +562,65 @@ void
 indiv_kvmfree(pagetable_t pagetable)
 {
   indiv_freewalk(pagetable, 0);
+}
+
+int
+indiv_kvmcopy(pagetable_t old, pagetable_t new, uint64 offset, uint64 sz)
+{
+  pte_t *pte;
+  uint64 pa, i;
+  uint flags;
+  offset = PGROUNDUP(offset);
+  sz = PGROUNDUP(sz);
+  if (sz > PLIC) return -1;
+  for(i = offset; i < sz; i += PGSIZE){
+    if((pte = walk(old, i, 0)) == 0)
+      panic("indiv_kvmcopy: pte should exist");
+    if((*pte & PTE_V) == 0) {
+      panic("indiv_kvmcopy: page not present");
+    }
+    pa = PTE2PA(*pte);
+    flags = PTE_FLAGS(*pte);
+    if(kvm_mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){
+      goto err;
+    }
+  }
+  return 0;
+
+ err:
+  indiv_kvmunmap(new, 0, i / PGSIZE);
+  return -1;
+}
+
+uint64
+indiv_kvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
+{
+  if(newsz >= oldsz)
+    return oldsz;
+
+  if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
+    int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
+    indiv_kvmunmap(pagetable, PGROUNDUP(newsz), npages);
+  }
+  return newsz;
+}
+
+int
+kvm_mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
+{
+  uint64 a, last;
+  pte_t *pte;
+
+  a = PGROUNDDOWN(va);
+  last = PGROUNDDOWN(va + size - 1);
+  for(;;){
+    if((pte = walk(pagetable, a, 1)) == 0)
+      return -1;
+    *pte = PA2PTE(pa) | perm | PTE_V;
+    if(a == last)
+      break;
+    a += PGSIZE;
+    pa += PGSIZE;
+  }
+  return 0;
 }

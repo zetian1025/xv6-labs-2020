@@ -30,10 +30,11 @@ int
 copyin_new(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
   struct proc *p = myproc();
-
+  w_sstatus(r_sstatus() | SSTATUS_SUM);
   if (srcva >= p->sz || srcva+len >= p->sz || srcva+len < srcva)
     return -1;
   memmove((void *) dst, (void *)srcva, len);
+  w_sstatus(r_sstatus() & ~SSTATUS_SUM);
   stats.ncopyin++;   // XXX lock
   return 0;
 }
@@ -47,12 +48,15 @@ copyinstr_new(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
   struct proc *p = myproc();
   char *s = (char *) srcva;
-  
+  w_sstatus(r_sstatus() | SSTATUS_SUM);
   stats.ncopyinstr++;   // XXX lock
   for(int i = 0; i < max && srcva + i < p->sz; i++){
     dst[i] = s[i];
-    if(s[i] == '\0')
+    if(s[i] == '\0') {
+      w_sstatus(r_sstatus() & ~SSTATUS_SUM);
       return 0;
+    }
   }
+  w_sstatus(r_sstatus() & ~SSTATUS_SUM);
   return -1;
 }

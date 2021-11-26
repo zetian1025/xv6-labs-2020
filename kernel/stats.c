@@ -30,7 +30,7 @@ int
 statsread(int user_dst, uint64 dst, int n)
 {
   int m;
-
+  
   acquire(&stats.lock);
 
   if(stats.sz == 0) {
